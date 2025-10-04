@@ -4,13 +4,13 @@ A powerful MCP (Model Context Protocol) server that connects Claude.ai with YouT
 
 ## Features
 
-- **🎯 Time-Range Subtitle Downloads**: Download only specific portions of long videos using customizable start/end times
-- **🌍 Multi-Language Support**: Download subtitles in multiple languages simultaneously
-- **📋 Video Metadata**: Get comprehensive video information including title, duration, description, and available formats
-- **📝 Multiple Subtitle Types**: Choose between manual subtitles, auto-generated subtitles, and live chat
-- **🎨 Multiple Formats**: Support for VTT, SRT, ASS, and other subtitle formats
-- **🔍 Subtitle Discovery**: List all available subtitle options for any video
-- **⚡ Smart Processing**: Intelligent VTT cleaning while preserving important timing information when needed
+- ** Time-Range Subtitle Downloads**: Download only specific portions of long videos using customizable start/end times
+- ** Multi-Language Support**: Download subtitles in multiple languages simultaneously
+- ** Video Metadata**: Get comprehensive video information including title, duration, description, and available formats
+- ** Multiple Subtitle Types**: Choose between manual subtitles, auto-generated subtitles, and live chat
+- ** Multiple Formats**: Support for VTT, SRT, ASS, and other subtitle formats
+- ** Subtitle Discovery**: List all available subtitle options for any video
+- ** Smart Processing**: Intelligent VTT cleaning while preserving important timing information when needed
 
 ## Available Tools
 
@@ -70,9 +70,37 @@ get_video_info({
    ```
 
 ### Install the MCP Server
-2. Install this server via [mcp-installer](https://github.com/SK-DEV-AI/mcp-installer):
+
+####  Installation
+If you prefer to manually configure the MCP server:
+
+1. **Install the package**:
    ```bash
-   mcp-installer add @sk-dev-ai/mcp-youtube
+   npm install -g @sk-dev-ai/mcp-youtube
+   ```
+
+2. **Add to your MCP configuration** (usually in `~/.mcp.json` or similar):
+   ```json
+   {
+     "mcpServers": {
+       "youtube": {
+         "command": "mcp-youtube",
+         "args": []
+       }
+     }
+   }
+   ```
+
+3. **Alternative configuration for npx** (if not installed globally):
+   ```json
+   {
+     "mcpServers": {
+       "youtube": {
+         "command": "npx",
+         "args": ["@sk-dev-ai/mcp-youtube"]
+       }
+     }
+   }
    ```
 
 ## Integration with Claude
@@ -84,3 +112,6 @@ Once installed, Claude can use this server to:
 - Process video content with precise time selection
 
 Try asking Claude: "Summarize the first 15 minutes of this YouTube video and provide the transcript in both English and Spanish."
+
+
+credits/cloned from : https://github.com/anaisbetts/mcp-youtube.git

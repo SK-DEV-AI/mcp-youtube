@@ -35,3 +35,6 @@ docs
 
 # Keep dist/ for npm publishing (built files needed)
 # dist/
+
+# npm authentication token
+.npmrc
