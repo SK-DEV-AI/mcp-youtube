@@ -1,0 +1,22 @@
+# Source files (built versions are in dist/)
+src/
+test/
+
+# Development files
+.gitignore
+eslint.config.mjs
+tsconfig.json
+.prettierrc
+
+# Lock files
+bun.lockb
+
+# Other development files
+*.log
+.idea/
+coverage/
+
+# Keep these in the package
+!dist/
+!README.md
+!package.json

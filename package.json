@@ -1,0 +1,57 @@
+{
+  "name": "@anaisbetts/mcp-youtube",
+  "version": "0.7.0",
+  "type": "module",
+  "description": "YouTube MCP Server - Advanced YouTube content integration for Claude.ai with time-range subtitle downloads, multi-language support, and comprehensive video metadata extraction",
+  "main": "dist/index.js",
+  "bin": {
+    "mcp-youtube": "dist/index.js"
+  },
+  "scripts": {
+    "build": "bun build --target node src/index.ts --outdir dist",
+    "prepublishOnly": "bun run build",
+    "test": "bun test"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "youtube",
+    "subtitles",
+    "claude",
+    "ai",
+    "video",
+    "transcript",
+    "time-range",
+    "multilingual"
+  ],
+  "author": "srikrishna <https://github.com/SK-DEV-AI>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/SK-DEV-AI/mcp-youtube.git"
+  },
+  "bugs": {
+    "url": "https://github.com/SK-DEV-AI/mcp-youtube/issues"
+  },
+  "homepage": "https://github.com/SK-DEV-AI/mcp-youtube#readme",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.6.0",
+    "rimraf": "^6.0.1",
+    "spawn-rx": "^4.0.0"
+  },
+  "devDependencies": {
+    "bun-types": "latest"
+  },
+  "peerDependencies": {
+    "yt-dlp": "*"
+  }
+}
