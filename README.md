@@ -70,9 +70,9 @@ get_video_info({
    ```
 
 ### Install the MCP Server
-2. Install this server via [mcp-installer](https://github.com/anaisbetts/mcp-installer):
+2. Install this server via [mcp-installer](https://github.com/SK-DEV-AI/mcp-installer):
    ```bash
-   mcp-installer add @anaisbetts/mcp-youtube
+   mcp-installer add @sk-dev-ai/mcp-youtube
    ```
 
 ## Integration with Claude
