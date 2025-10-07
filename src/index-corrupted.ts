@@ -268,6 +268,132 @@ function formatSecondsToTime(seconds: number): string {
   return `${minutes}:${secs.toString().padStart(2, '0')}`;
 }
 
+async function handleGetVideoInfo(args: { url: string }) {
+  const { url } = args;
+
+  try {
+    // Try to get from cache first
+    const cacheKey = `video_info:${url}`;
+    const cached = await cache.get(cacheKey);
+    if (cached) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Video Information (cached):\n${JSON.stringify(cached, null, 2)}`,
+          },
+        ],
+      };
+    }
+
+    const tempDir = fs.mkdtempSync(`${os.tmpdir()}${path.sep}youtube-`);
+
+    try {
+      // Check if yt-dlp is available with better error handling
+      await withRetry(async () => {
+        try {
+          await spawnPromise("yt-dlp", ["--version"], { cwd: tempDir });
+        } catch (err) {
+          throw new YouTubeMCPError(
+            "yt-dlp is not installed or not accessible. Please install yt-dlp first: https://github.com/yt-dlp/yt-dlp",
+            ErrorCodes.YT_DLP_NOT_FOUND,
+            false,
+            err as Error
+          );
+        }
+      });
+
+      // Get video info without downloading with retry logic
+      const result = await withRetry(async () => {
+        return await spawnPromise(
+          "yt-dlp",
+          [
+            "--dump-json",
+            "--no-download",
+            "--skip-download",
+            "--no-warnings",
+            url,
+          ],
+          { cwd: tempDir }
+        );
+      });
+
+      // Extract JSON from output (yt-dlp might include warnings)
+      let jsonText = result.trim();
+      const firstBrace = jsonText.indexOf('{');
+      const lastBrace = jsonText.lastIndexOf('}');
+
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        jsonText = jsonText.substring(firstBrace, lastBrace + 1);
+      }
+
+      const videoInfo = JSON.parse(jsonText);
+
+      const info = {
+        title: videoInfo.title || "Unknown Title",
+        duration: videoInfo.duration ? formatSecondsToTime(videoInfo.duration) : "Unknown",
+        uploader: videoInfo.uploader || "Unknown",
+        upload_date: videoInfo.upload_date || "Unknown",
+        view_count: videoInfo.view_count || 0,
+        description: videoInfo.description || "",
+        formats: videoInfo.formats?.length || 0,
+        subtitles_available: Object.keys(videoInfo.subtitles || {}).length,
+        auto_subtitles_available: Object.keys(videoInfo.automatic_captions || {}).length,
+        thumbnail: videoInfo.thumbnail || "",
+        channel_url: videoInfo.channel_url || "",
+      };
+
+      // Cache the result
+      await cache.set(cacheKey, info);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Video Information:\n` +
+                  `Title: ${info.title}\n` +
+                  `Duration: ${info.duration}\n` +
+                  `Uploader: ${info.uploader}\n` +
+                  `Channel: ${info.channel_url}\n` +
+                  `Upload Date: ${info.upload_date}\n` +
+                  `Views: ${info.view_count.toLocaleString()}\n` +
+                  `Available Formats: ${info.formats}\n` +
+                  `Manual Subtitles: ${info.subtitles_available} languages\n` +
+                  `Auto Subtitles: ${info.auto_subtitles_available} languages\n` +
+                  `Thumbnail: ${info.thumbnail}\n\n` +
+                  `Description:\n${info.description.substring(0, 500)}${info.description.length > 500 ? '...' : ''}`,
+          },
+        ],
+      };
+    } finally {
+      rimraf.sync(tempDir);
+    }
+  } catch (error) {
+    if (error instanceof YouTubeMCPError) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error.message}`,
+          },
+        ],
+        isError: true,
+      };
+    }
+
+    const mcpError = handleYtDlpError(error as Error, url);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error: ${mcpError.message}`,
+        },
+      ],
+      isError: true,
+    };
+  }
+}
+
 async function handleDownloadThumbnail(args: {
   url: string;
   quality?: string;
@@ -345,10 +471,11 @@ async function handleDownloadThumbnail(args: {
         );
       }
 
-      // Download thumbnail using curl
+      // Download thumbnail using curl or wget
       const outputFileName = output_filename ? `${output_filename}.jpg` : `${videoInfo.title || 'thumbnail'}.jpg`;
       const outputPath = path.join(downloadDir, outputFileName);
 
+      // Use curl to download the thumbnail
       await withRetry(async () => {
         return await spawnPromise(
           "curl",
@@ -595,9 +722,6 @@ async function handleDownloadVideoSegment(args: {
       }
     }
 
-    const tempDir = fs.mkdtempSync(`${os.tmpdir()}${path.sep}youtube-`);
-
-    try {
       // Check if yt-dlp is available
       await withRetry(async () => {
         try {
@@ -760,247 +884,6 @@ async function handleDownloadVideo(args: {
     const tempDir = fs.mkdtempSync(`${os.tmpdir()}${path.sep}youtube-`);
 
     try {
-      // Check if yt-dlp is available
-      await withRetry(async () => {
-        try {
-          await spawnPromise("yt-dlp", ["--version"], { cwd: tempDir });
-        } catch (err) {
-          throw new YouTubeMCPError(
-            "yt-dlp is not installed. Please install yt-dlp first: https://github.com/yt-dlp/yt-dlp",
-            ErrorCodes.YT_DLP_NOT_FOUND,
-            false,
-            err as Error
-          );
-        }
-      });
-
-      // Build format string based on quality preference
-      let formatString = "";
-      switch (quality) {
-        case "720p":
-          formatString = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best";
-          break;
-        case "480p":
-          formatString = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best";
-          break;
-        case "360p":
-          formatString = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best";
-          break;
-        default: // "best"
-          formatString = format === "webm" ?
-            "bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best" :
-            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
-      }
-
-      // Build yt-dlp arguments
-      const outputTemplate = output_filename ? `${output_filename}.%(ext)s` : "%(title)s.%(ext)s";
-      const ytDlpArgs = [
-        "-f", formatString,
-        "--no-playlist",
-        "--no-warnings",
-        "-o", path.join(downloadDir, outputTemplate)
-      ];
-
-      // Add format-specific options
-      if (format === "mp4" || quality !== "best") {
-        ytDlpArgs.push("--merge-output-format", "mp4");
-      }
-
-      ytDlpArgs.push(url);
-
-      // Download video with progress
-      const result = await withRetry(async () => {
-        return await spawnPromise("yt-dlp", ytDlpArgs, { cwd: tempDir });
-      });
-
-      // Check if file was downloaded in the target directory
-      const files = fs.readdirSync(downloadDir);
-      const videoFiles = files.filter(file =>
-        (file.endsWith('.mp4') || file.endsWith('.webm')) &&
-        (output_filename ? file.startsWith(output_filename) : true)
-      );
-
-      if (videoFiles.length === 0) {
-        throw new YouTubeMCPError(
-          `No video file was downloaded to ${downloadDir}. The video may not be available or format selection failed.`,
-          ErrorCodes.FORMAT_NOT_AVAILABLE,
-          true
-        );
-      }
-
-      const downloadedFile = videoFiles[0];
-      const filePath = path.join(downloadDir, downloadedFile);
-      const stats = fs.statSync(filePath);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Video downloaded successfully!\n` +
-                  `File: ${downloadedFile}\n` +
-                  `Location: ${filePath}\n` +
-                  `Size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB\n` +
-                  `Quality: ${quality}\n` +
-                  `Format: ${format}\n` +
-                  `Save Directory: ${downloadDir}\n` +
-                  `Output: ${result}`,
-          },
-        ],
-      };
-    } finally {
-      rimraf.sync(tempDir);
-    }
-  } catch (error) {
-    if (error instanceof YouTubeMCPError) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error: ${error.message}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-
-    const mcpError = handleYtDlpError(error as Error, url);
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Error: ${mcpError.message}`,
-        },
-      ],
-      isError: true,
-    };
-  }
-}
-
-async function handleGetVideoInfo(args: { url: string }) {
-  const { url } = args;
-
-  try {
-    // Try to get from cache first
-    const cacheKey = `video_info:${url}`;
-    const cached = await cache.get(cacheKey);
-    if (cached) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Video Information (cached):\n${JSON.stringify(cached, null, 2)}`,
-          },
-        ],
-      };
-    }
-
-    const tempDir = fs.mkdtempSync(`${os.tmpdir()}${path.sep}youtube-`);
-
-    try {
-      // Check if yt-dlp is available with better error handling
-      await withRetry(async () => {
-        try {
-          await spawnPromise("yt-dlp", ["--version"], { cwd: tempDir });
-        } catch (err) {
-          throw new YouTubeMCPError(
-            "yt-dlp is not installed or not accessible. Please install yt-dlp first: https://github.com/yt-dlp/yt-dlp",
-            ErrorCodes.YT_DLP_NOT_FOUND,
-            false,
-            err as Error
-          );
-        }
-      });
-
-      // Get video info without downloading with retry logic
-      const result = await withRetry(async () => {
-        return await spawnPromise(
-          "yt-dlp",
-          [
-            "--dump-json",
-            "--no-download",
-            "--skip-download",
-            "--no-warnings",
-            url,
-          ],
-          { cwd: tempDir }
-        );
-      });
-
-      // Extract JSON from output (yt-dlp might include warnings)
-      let jsonText = result.trim();
-      const firstBrace = jsonText.indexOf('{');
-      const lastBrace = jsonText.lastIndexOf('}');
-
-      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-        jsonText = jsonText.substring(firstBrace, lastBrace + 1);
-      }
-
-      const videoInfo = JSON.parse(jsonText);
-
-      const info = {
-        title: videoInfo.title || "Unknown Title",
-        duration: videoInfo.duration ? formatSecondsToTime(videoInfo.duration) : "Unknown",
-        uploader: videoInfo.uploader || "Unknown",
-        upload_date: videoInfo.upload_date || "Unknown",
-        view_count: videoInfo.view_count || 0,
-        description: videoInfo.description || "",
-        formats: videoInfo.formats?.length || 0,
-        subtitles_available: Object.keys(videoInfo.subtitles || {}).length,
-        auto_subtitles_available: Object.keys(videoInfo.automatic_captions || {}).length,
-        thumbnail: videoInfo.thumbnail || "",
-        channel_url: videoInfo.channel_url || "",
-      };
-
-      // Cache the result
-      await cache.set(cacheKey, info);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Video Information:\n` +
-                  `Title: ${info.title}\n` +
-                  `Duration: ${info.duration}\n` +
-                  `Uploader: ${info.uploader}\n` +
-                  `Channel: ${info.channel_url}\n` +
-                  `Upload Date: ${info.upload_date}\n` +
-                  `Views: ${info.view_count.toLocaleString()}\n` +
-                  `Available Formats: ${info.formats}\n` +
-                  `Manual Subtitles: ${info.subtitles_available} languages\n` +
-                  `Auto Subtitles: ${info.auto_subtitles_available} languages\n` +
-                  `Thumbnail: ${info.thumbnail}\n\n` +
-                  `Description:\n${info.description.substring(0, 500)}${info.description.length > 500 ? '...' : ''}`,
-          },
-        ],
-      };
-    } finally {
-      rimraf.sync(tempDir);
-    }
-  } catch (error) {
-    if (error instanceof YouTubeMCPError) {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Error: ${error.message}`,
-          },
-        ],
-        isError: true,
-      };
-    }
-
-    const mcpError = handleYtDlpError(error as Error, url);
-    return {
-      content: [
-        {
-          type: "text",
-          text: `Error: ${mcpError.message}`,
-        },
-      ],
-      isError: true,
-    };
-  }
-}
 
 async function handleListAvailableSubtitles(args: { url: string }) {
   const { url } = args;
@@ -1326,31 +1209,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
-      case "download_thumbnail":
-        return await handleDownloadThumbnail(request.params.arguments as {
-          url: string;
-          quality?: string;
-          output_filename?: string;
-          save_path?: string;
-        });
-      case "download_audio":
-        return await handleDownloadAudio(request.params.arguments as {
-          url: string;
-          quality?: string;
-          format?: string;
-          output_filename?: string;
-          save_path?: string;
-        });
-      case "download_video_segment":
-        return await handleDownloadVideoSegment(request.params.arguments as {
-          url: string;
-          time_start: string;
-          time_end: string;
-          quality?: string;
-          format?: string;
-          output_filename?: string;
-          save_path?: string;
-        });
       case "download_video":
         return await handleDownloadVideo(request.params.arguments as {
           url: string;
@@ -1377,7 +1235,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return await handleDownloadVideoMetadata(request.params.arguments as { url: string });
       default:
         throw new YouTubeMCPError(
-          `Unknown tool: ${name}. Available tools: download_thumbnail, download_audio, download_video_segment, download_video, get_video_info, list_available_subtitles, download_subtitles, download_video_metadata`,
+          `Unknown tool: ${name}. Available tools: download_video, get_video_info, list_available_subtitles, download_subtitles, download_video_metadata`,
           ErrorCodes.UNKNOWN_ERROR,
           false
         );
@@ -1532,10 +1390,7 @@ async function runServer() {
   await server.connect(transport);
   console.error("✅ Enhanced YouTube MCP Server started successfully!");
   console.error("Available tools:");
-  console.error("  • download_thumbnail - Download video thumbnails (fast)");
-  console.error("  • download_audio - Download audio content (music/podcasts)");
-  console.error("  • download_video_segment - Download specific video portions");
-  console.error("  • download_video - Download full videos with quality selection");
+  console.error("  • download_video - Download videos with quality selection");
   console.error("  • get_video_info - Get comprehensive video metadata");
   console.error("  • list_available_subtitles - List subtitle options");
   console.error("  • download_subtitles - Download subtitles with time ranges");

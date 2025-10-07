@@ -1,6 +1,6 @@
 {
-  "name": "@sk-dev-ai/mcp-youtube",
-  "version": "0.7.0",
+  "name": "@sri-krishna/mcp-youtube",
+  "version": "0.8.0",
   "type": "module",
   "description": "YouTube MCP Server - Advanced YouTube content integration for Claude.ai with time-range subtitle downloads, multi-language support, and comprehensive video metadata extraction",
   "main": "dist/index.js",
@@ -38,7 +38,8 @@
     "node": ">=18.0.0"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com/"
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   },
   "files": [
     "dist/",

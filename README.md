@@ -1,21 +1,41 @@
-# YouTube MCP Server
+# Enhanced YouTube MCP Server
 
-A powerful MCP (Model Context Protocol) server that connects Claude.ai with YouTube's rich content via `yt-dlp`. Features comprehensive subtitle downloading with time range selection, multiple language support, and detailed video metadata extraction.
+A powerful MCP (Model Context Protocol) server that connects AI models with YouTube's rich content via `yt-dlp`. Features comprehensive video downloading, enhanced subtitle processing with time range selection, multiple language support, intelligent caching, and robust error handling.
 
-## Features
+## ✨ New Features (v0.8.0)
 
-- ** Time-Range Subtitle Downloads**: Download only specific portions of long videos using customizable start/end times
-- ** Multi-Language Support**: Download subtitles in multiple languages simultaneously
-- ** Video Metadata**: Get comprehensive video information including title, duration, description, and available formats
-- ** Multiple Subtitle Types**: Choose between manual subtitles, auto-generated subtitles, and live chat
-- ** Multiple Formats**: Support for VTT, SRT, ASS, and other subtitle formats
-- ** Subtitle Discovery**: List all available subtitle options for any video
-- ** Smart Processing**: Intelligent VTT cleaning while preserving important timing information when needed
+- **🚀 Video Download**: Download videos with quality selection (best, 720p, 480p, 360p)
+- **🔄 Intelligent Caching**: Automatic caching of video metadata for faster responses
+- **🛡️ Enhanced Error Handling**: Retry mechanisms and clear error messages
+- **⚡ Progress Reporting**: Real-time feedback for long operations
+- **🎯 Smart Format Selection**: Automatic fallback for unavailable formats
+
+## Core Features
+
+- **⏰ Time-Range Downloads**: Download specific portions of videos using customizable start/end times
+- **🌍 Multi-Language Support**: Download subtitles in multiple languages simultaneously
+- **📊 Video Metadata**: Get comprehensive video information including title, duration, description, and formats
+- **📝 Multiple Subtitle Types**: Choose between manual subtitles, auto-generated subtitles, and live chat
+- **📋 Multiple Formats**: Support for VTT, SRT, ASS, MP4, WebM, and other formats
+- **🔍 Subtitle Discovery**: List all available subtitle options for any video
+- **🧹 Smart Processing**: Intelligent content cleaning while preserving important information
 
 ## Available Tools
 
+### `download_video` ⭐ *NEW*
+Download YouTube videos with quality and format selection:
+```typescript
+download_video({
+  "url": "https://www.youtube.com/watch?v=...",
+  "quality": "best", // "best", "720p", "480p", "360p"
+  "format": "mp4",   // "mp4", "webm", "best"
+  "output_filename": "my_video", // optional custom filename
+  "save_path": "./downloads" // optional directory to save video
+})
+```
+
 ### `get_video_info`
-Get comprehensive information about a YouTube video including metadata and available subtitle options.
+Get comprehensive information about a YouTube video including metadata and available subtitle options. Results are automatically cached for 24 hours.
 
 ### `list_available_subtitles`
 List all available subtitle tracks for a video, showing manual and auto-generated options in different languages.
@@ -71,12 +91,12 @@ get_video_info({
 
 ### Install the MCP Server
 
-####  Installation
+#### Manual Installation
 If you prefer to manually configure the MCP server:
 
 1. **Install the package**:
    ```bash
-   npm install -g @sk-dev-ai/mcp-youtube
+   npm install -g @sri-krishna/mcp-youtube
    ```
 
 2. **Add to your MCP configuration** (usually in `~/.mcp.json` or similar):
@@ -97,7 +117,7 @@ If you prefer to manually configure the MCP server:
      "mcpServers": {
        "youtube": {
          "command": "npx",
-         "args": ["@sk-dev-ai/mcp-youtube"]
+         "args": ["@sri-krishna/mcp-youtube"]
        }
      }
    }

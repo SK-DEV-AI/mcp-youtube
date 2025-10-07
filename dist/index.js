@@ -15662,9 +15662,9 @@ class StdioServerTransport {
 
 // src/index.ts
 var import_spawn_rx = __toESM(require_src2(), 1);
-import os from "node:os";
-import fs2 from "node:fs";
-import path2 from "node:path";
+import os2 from "node:os";
+import fs3 from "node:fs";
+import path3 from "node:path";
 
 // node_modules/minimatch/dist/esm/index.js
 var import_brace_expansion = __toESM(require_brace_expansion(), 1);
@@ -21710,10 +21710,177 @@ var rimraf = Object.assign(rimraf_, {
 });
 rimraf.rimraf = rimraf;
 
+// src/errors.ts
+class YouTubeMCPError extends Error {
+  code;
+  retryable;
+  originalError;
+  constructor(message, code, retryable = false, originalError) {
+    super(message);
+    this.code = code;
+    this.retryable = retryable;
+    this.originalError = originalError;
+    this.name = "YouTubeMCPError";
+  }
+}
+var ErrorCodes = {
+  YT_DLP_NOT_FOUND: "YT_DLP_NOT_FOUND",
+  VIDEO_NOT_FOUND: "VIDEO_NOT_FOUND",
+  INVALID_URL: "INVALID_URL",
+  NETWORK_ERROR: "NETWORK_ERROR",
+  PERMISSION_DENIED: "PERMISSION_DENIED",
+  FORMAT_NOT_AVAILABLE: "FORMAT_NOT_AVAILABLE",
+  SUBTITLES_NOT_AVAILABLE: "SUBTITLES_NOT_AVAILABLE",
+  CACHE_ERROR: "CACHE_ERROR",
+  UNKNOWN_ERROR: "UNKNOWN_ERROR"
+};
+function createMCPError(message, code = ErrorCodes.UNKNOWN_ERROR, retryable = false, originalError) {
+  return new YouTubeMCPError(message, code, retryable, originalError);
+}
+function handleYtDlpError(error, url) {
+  const errorMessage = error.message.toLowerCase();
+  if (errorMessage.includes("video not found") || errorMessage.includes("404")) {
+    return createMCPError(`Video not found or unavailable: ${url}`, ErrorCodes.VIDEO_NOT_FOUND, false, error);
+  }
+  if (errorMessage.includes("sign in to confirm") || errorMessage.includes("age")) {
+    return createMCPError("Video requires authentication or age verification", ErrorCodes.PERMISSION_DENIED, false, error);
+  }
+  if (errorMessage.includes("no subtitles") || errorMessage.includes("subtitles not available")) {
+    return createMCPError("No subtitles available for this video", ErrorCodes.SUBTITLES_NOT_AVAILABLE, false, error);
+  }
+  if (errorMessage.includes("format not available") || errorMessage.includes("requested format")) {
+    return createMCPError("Requested format not available for this video", ErrorCodes.FORMAT_NOT_AVAILABLE, true, error);
+  }
+  if (errorMessage.includes("network") || errorMessage.includes("connection")) {
+    return createMCPError("Network error occurred while processing video", ErrorCodes.NETWORK_ERROR, true, error);
+  }
+  return createMCPError(`Unexpected error: ${error.message}`, ErrorCodes.UNKNOWN_ERROR, true, error);
+}
+async function withRetry(operation, maxRetries = 3, delay = 1000) {
+  let lastError;
+  for (let attempt = 1;attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (error instanceof YouTubeMCPError && !error.retryable) {
+        throw error;
+      }
+      if (attempt === maxRetries) {
+        throw createMCPError(`Operation failed after ${maxRetries} attempts: ${lastError.message}`, ErrorCodes.UNKNOWN_ERROR, false, lastError);
+      }
+      await new Promise((resolve6) => setTimeout(resolve6, delay * attempt));
+    }
+  }
+  throw lastError;
+}
+
+// src/cache.ts
+import fs2 from "node:fs";
+import path2 from "node:path";
+import os from "node:os";
+
+class SimpleCache {
+  cacheDir;
+  defaultTTL = 24 * 60 * 60 * 1000;
+  constructor(cacheDir) {
+    this.cacheDir = cacheDir || path2.join(os.tmpdir(), "youtube-mcp-cache");
+    this.ensureCacheDir();
+  }
+  ensureCacheDir() {
+    if (!fs2.existsSync(this.cacheDir)) {
+      fs2.mkdirSync(this.cacheDir, { recursive: true });
+    }
+  }
+  getCacheFile(key) {
+    const safeKey = key.replace(/[^a-zA-Z0-9_-]/g, "_");
+    return path2.join(this.cacheDir, `${safeKey}.json`);
+  }
+  async get(key) {
+    const cacheFile = this.getCacheFile(key);
+    try {
+      if (!fs2.existsSync(cacheFile)) {
+        return null;
+      }
+      const content = fs2.readFileSync(cacheFile, "utf8");
+      const entry = JSON.parse(content);
+      if (Date.now() > entry.expiresAt) {
+        fs2.unlinkSync(cacheFile);
+        return null;
+      }
+      return entry.data;
+    } catch (error) {
+      try {
+        if (fs2.existsSync(cacheFile)) {
+          fs2.unlinkSync(cacheFile);
+        }
+      } catch {}
+      return null;
+    }
+  }
+  async set(key, data, ttl) {
+    const cacheFile = this.getCacheFile(key);
+    const entry = {
+      data,
+      timestamp: Date.now(),
+      expiresAt: Date.now() + (ttl || this.defaultTTL)
+    };
+    try {
+      fs2.writeFileSync(cacheFile, JSON.stringify(entry, null, 2));
+    } catch (error) {
+      console.warn("Failed to write cache:", error);
+    }
+  }
+  async delete(key) {
+    const cacheFile = this.getCacheFile(key);
+    try {
+      if (fs2.existsSync(cacheFile)) {
+        fs2.unlinkSync(cacheFile);
+      }
+    } catch {}
+  }
+  async clear() {
+    try {
+      if (fs2.existsSync(this.cacheDir)) {
+        const files = fs2.readdirSync(this.cacheDir);
+        for (const file of files) {
+          if (file.endsWith(".json")) {
+            fs2.unlinkSync(path2.join(this.cacheDir, file));
+          }
+        }
+      }
+    } catch {}
+  }
+  async cleanup() {
+    try {
+      if (!fs2.existsSync(this.cacheDir)) {
+        return;
+      }
+      const files = fs2.readdirSync(this.cacheDir);
+      const now = Date.now();
+      for (const file of files) {
+        if (!file.endsWith(".json"))
+          continue;
+        const cacheFile = path2.join(this.cacheDir, file);
+        try {
+          const content = fs2.readFileSync(cacheFile, "utf8");
+          const entry = JSON.parse(content);
+          if (now > entry.expiresAt) {
+            fs2.unlinkSync(cacheFile);
+          }
+        } catch {
+          fs2.unlinkSync(cacheFile);
+        }
+      }
+    } catch {}
+  }
+}
+var cache = new SimpleCache;
+
 // src/index.ts
 var server = new Server({
   name: "mcp-youtube",
-  version: "0.7.0"
+  version: "0.8.0"
 }, {
   capabilities: {
     tools: {}
@@ -21722,6 +21889,132 @@ var server = new Server({
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
+      {
+        name: "download_thumbnail",
+        description: "Download a YouTube video thumbnail image. Fast and lightweight - perfect for getting video previews.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "URL of the YouTube video" },
+            quality: {
+              type: "string",
+              description: "Thumbnail quality",
+              enum: ["maxres", "high", "medium", "default"],
+              default: "high"
+            },
+            output_filename: {
+              type: "string",
+              description: "Custom output filename (without extension)"
+            },
+            save_path: {
+              type: "string",
+              description: "Directory path to save the thumbnail (defaults to current directory)"
+            }
+          },
+          required: ["url"]
+        }
+      },
+      {
+        name: "download_audio",
+        description: "Download audio from a YouTube video. Perfect for music, podcasts, or audio content - usually faster than video downloads.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "URL of the YouTube video" },
+            quality: {
+              type: "string",
+              description: "Audio quality preference",
+              enum: ["best", "high", "medium", "low"],
+              default: "best"
+            },
+            format: {
+              type: "string",
+              description: "Audio format",
+              enum: ["mp3", "m4a", "wav", "flac", "best"],
+              default: "mp3"
+            },
+            output_filename: {
+              type: "string",
+              description: "Custom output filename (without extension)"
+            },
+            save_path: {
+              type: "string",
+              description: "Directory path to save the audio (defaults to current directory)"
+            }
+          },
+          required: ["url"]
+        }
+      },
+      {
+        name: "download_video_segment",
+        description: "Download a specific segment of a YouTube video using time range. Perfect for long videos where you only need a portion.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "URL of the YouTube video" },
+            time_start: {
+              type: "string",
+              description: "Start time for video segment (format: 'MM:SS' or 'HH:MM:SS')"
+            },
+            time_end: {
+              type: "string",
+              description: "End time for video segment (format: 'MM:SS' or 'HH:MM:SS')"
+            },
+            quality: {
+              type: "string",
+              description: "Video quality preference",
+              enum: ["best", "720p", "480p", "360p"],
+              default: "best"
+            },
+            format: {
+              type: "string",
+              description: "Output format preference",
+              enum: ["mp4", "webm", "best"],
+              default: "mp4"
+            },
+            output_filename: {
+              type: "string",
+              description: "Custom output filename (without extension)"
+            },
+            save_path: {
+              type: "string",
+              description: "Directory path to save the video segment (defaults to current directory)"
+            }
+          },
+          required: ["url", "time_start", "time_end"]
+        }
+      },
+      {
+        name: "download_video",
+        description: "Download a YouTube video with quality selection. Supports various formats and quality options for optimal viewing experience.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "URL of the YouTube video" },
+            quality: {
+              type: "string",
+              description: "Video quality preference",
+              enum: ["best", "720p", "480p", "360p"],
+              default: "best"
+            },
+            format: {
+              type: "string",
+              description: "Output format preference",
+              enum: ["mp4", "webm", "best"],
+              default: "mp4"
+            },
+            output_filename: {
+              type: "string",
+              description: "Custom output filename (without extension)"
+            },
+            save_path: {
+              type: "string",
+              description: "Directory path to save the downloaded video (defaults to current directory)"
+            }
+          },
+          required: ["url"]
+        }
+      },
       {
         name: "get_video_info",
         description: "Get comprehensive information about a YouTube video including metadata, available formats, and subtitle options. This helps understand what content is available before downloading.",
@@ -21818,78 +22111,539 @@ function formatSecondsToTime(seconds) {
   }
   return `${minutes}:${secs.toString().padStart(2, "0")}`;
 }
-async function handleGetVideoInfo(args) {
-  const { url } = args;
-  const tempDir = fs2.mkdtempSync(`${os.tmpdir()}${path2.sep}youtube-`);
+async function handleDownloadThumbnail(args) {
+  const { url, quality = "high", output_filename, save_path } = args;
   try {
+    const downloadDir = save_path && save_path.trim() !== "" ? save_path : process.cwd();
+    if (!fs3.existsSync(downloadDir)) {
+      try {
+        fs3.mkdirSync(downloadDir, { recursive: true });
+      } catch (error) {
+        throw new YouTubeMCPError(`Cannot create save directory: ${downloadDir}. ${error instanceof Error ? error.message : "Unknown error"}`, ErrorCodes.UNKNOWN_ERROR, false);
+      }
+    }
+    const tempDir = fs3.mkdtempSync(`${os2.tmpdir()}${path3.sep}youtube-`);
     try {
-      await import_spawn_rx.spawnPromise("yt-dlp", ["--version"], { cwd: tempDir });
-    } catch (err) {
-      throw new Error("yt-dlp is not installed. Please install yt-dlp first.");
+      await withRetry(async () => {
+        try {
+          await import_spawn_rx.spawnPromise("yt-dlp", ["--version"], { cwd: tempDir });
+        } catch (err) {
+          throw new YouTubeMCPError("yt-dlp is not installed. Please install yt-dlp first: https://github.com/yt-dlp/yt-dlp", ErrorCodes.YT_DLP_NOT_FOUND, false, err);
+        }
+      });
+      const result = await withRetry(async () => {
+        return await import_spawn_rx.spawnPromise("yt-dlp", [
+          "--dump-json",
+          "--no-download",
+          "--skip-download",
+          "--no-warnings",
+          url
+        ], { cwd: tempDir });
+      });
+      let jsonText = result.trim();
+      const firstBrace = jsonText.indexOf("{");
+      const lastBrace = jsonText.lastIndexOf("}");
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        jsonText = jsonText.substring(firstBrace, lastBrace + 1);
+      }
+      const videoInfo = JSON.parse(jsonText);
+      const thumbnailUrl = videoInfo.thumbnail;
+      if (!thumbnailUrl) {
+        throw new YouTubeMCPError("No thumbnail found for this video", ErrorCodes.UNKNOWN_ERROR, false);
+      }
+      const outputFileName = output_filename ? `${output_filename}.jpg` : `${videoInfo.title || "thumbnail"}.jpg`;
+      const outputPath = path3.join(downloadDir, outputFileName);
+      await withRetry(async () => {
+        return await import_spawn_rx.spawnPromise("curl", ["-L", "-o", outputPath, thumbnailUrl], { cwd: tempDir });
+      });
+      if (!fs3.existsSync(outputPath)) {
+        throw new YouTubeMCPError("Failed to download thumbnail", ErrorCodes.NETWORK_ERROR, true);
+      }
+      const stats = fs3.statSync(outputPath);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Thumbnail downloaded successfully!
+` + `File: ${outputFileName}
+` + `Location: ${outputPath}
+` + `Size: ${(stats.size / 1024).toFixed(2)} KB
+` + `Quality: ${quality}
+` + `Source: ${thumbnailUrl}`
+          }
+        ]
+      };
+    } finally {
+      rimraf.sync(tempDir);
     }
-    const result = await import_spawn_rx.spawnPromise("yt-dlp", [
-      "--dump-json",
-      "--no-download",
-      "--skip-download",
-      "--no-warnings",
-      url
-    ], { cwd: tempDir });
-    let jsonText = result.trim();
-    const firstBrace = jsonText.indexOf("{");
-    const lastBrace = jsonText.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-      jsonText = jsonText.substring(firstBrace, lastBrace + 1);
+  } catch (error) {
+    if (error instanceof YouTubeMCPError) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error.message}`
+          }
+        ],
+        isError: true
+      };
     }
-    const videoInfo = JSON.parse(jsonText);
-    const info = {
-      title: videoInfo.title || "Unknown Title",
-      duration: videoInfo.duration ? formatSecondsToTime(videoInfo.duration) : "Unknown",
-      uploader: videoInfo.uploader || "Unknown",
-      upload_date: videoInfo.upload_date || "Unknown",
-      view_count: videoInfo.view_count || 0,
-      description: videoInfo.description || "",
-      formats: videoInfo.formats?.length || 0,
-      subtitles_available: Object.keys(videoInfo.subtitles || {}).length,
-      auto_subtitles_available: Object.keys(videoInfo.automatic_captions || {}).length
-    };
+    const mcpError = handleYtDlpError(error, url);
     return {
       content: [
         {
           type: "text",
-          text: `Video Information:
+          text: `Error: ${mcpError.message}`
+        }
+      ],
+      isError: true
+    };
+  }
+}
+async function handleDownloadAudio(args) {
+  const { url, quality = "best", format = "mp3", output_filename, save_path } = args;
+  try {
+    const downloadDir = save_path && save_path.trim() !== "" ? save_path : process.cwd();
+    if (!fs3.existsSync(downloadDir)) {
+      try {
+        fs3.mkdirSync(downloadDir, { recursive: true });
+      } catch (error) {
+        throw new YouTubeMCPError(`Cannot create save directory: ${downloadDir}. ${error instanceof Error ? error.message : "Unknown error"}`, ErrorCodes.UNKNOWN_ERROR, false);
+      }
+    }
+    const tempDir = fs3.mkdtempSync(`${os2.tmpdir()}${path3.sep}youtube-`);
+    try {
+      await withRetry(async () => {
+        try {
+          await import_spawn_rx.spawnPromise("yt-dlp", ["--version"], { cwd: tempDir });
+        } catch (err) {
+          throw new YouTubeMCPError("yt-dlp is not installed. Please install yt-dlp first: https://github.com/yt-dlp/yt-dlp", ErrorCodes.YT_DLP_NOT_FOUND, false, err);
+        }
+      });
+      let formatString = "";
+      switch (quality) {
+        case "high":
+          formatString = "bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio";
+          break;
+        case "medium":
+          formatString = "worstaudio[ext=m4a]/worstaudio[ext=mp3]/worstaudio";
+          break;
+        case "low":
+          formatString = "worstaudio";
+          break;
+        default:
+          formatString = "bestaudio";
+      }
+      let audioFormat = "mp3";
+      switch (format) {
+        case "m4a":
+          audioFormat = "m4a";
+          break;
+        case "wav":
+          audioFormat = "wav";
+          break;
+        case "flac":
+          audioFormat = "flac";
+          break;
+        case "best":
+          audioFormat = "best";
+          break;
+        default:
+          audioFormat = "mp3";
+      }
+      const outputTemplate = output_filename ? `${output_filename}.%(ext)s` : "%(title)s.%(ext)s";
+      const ytDlpArgs = [
+        "-x",
+        "--audio-format",
+        audioFormat,
+        "--no-playlist",
+        "--no-warnings",
+        "-o",
+        path3.join(downloadDir, outputTemplate)
+      ];
+      ytDlpArgs.push(url);
+      const result = await withRetry(async () => {
+        return await import_spawn_rx.spawnPromise("yt-dlp", ytDlpArgs, { cwd: tempDir });
+      });
+      const files = fs3.readdirSync(downloadDir);
+      const audioFiles = files.filter((file) => (file.endsWith(".mp3") || file.endsWith(".m4a") || file.endsWith(".wav") || file.endsWith(".flac")) && (output_filename ? file.startsWith(output_filename) : true));
+      if (audioFiles.length === 0) {
+        throw new YouTubeMCPError("No audio file was downloaded. The video may not have audio or format selection failed.", ErrorCodes.FORMAT_NOT_AVAILABLE, true);
+      }
+      const downloadedFile = audioFiles[0];
+      const filePath = path3.join(downloadDir, downloadedFile);
+      const stats = fs3.statSync(filePath);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Audio downloaded successfully!
+` + `File: ${downloadedFile}
+` + `Location: ${filePath}
+` + `Size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB
+` + `Quality: ${quality}
+` + `Format: ${format}
+` + `Output: ${result}`
+          }
+        ]
+      };
+    } finally {
+      rimraf.sync(tempDir);
+    }
+  } catch (error) {
+    if (error instanceof YouTubeMCPError) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error.message}`
+          }
+        ],
+        isError: true
+      };
+    }
+    const mcpError = handleYtDlpError(error, url);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error: ${mcpError.message}`
+        }
+      ],
+      isError: true
+    };
+  }
+}
+async function handleDownloadVideoSegment(args) {
+  const { url, time_start, time_end, quality = "best", format = "mp4", output_filename, save_path } = args;
+  try {
+    const downloadDir = save_path && save_path.trim() !== "" ? save_path : process.cwd();
+    if (!fs3.existsSync(downloadDir)) {
+      try {
+        fs3.mkdirSync(downloadDir, { recursive: true });
+      } catch (error) {
+        throw new YouTubeMCPError(`Cannot create save directory: ${downloadDir}. ${error instanceof Error ? error.message : "Unknown error"}`, ErrorCodes.UNKNOWN_ERROR, false);
+      }
+    }
+    const tempDir = fs3.mkdtempSync(`${os2.tmpdir()}${path3.sep}youtube-`);
+    try {
+      await withRetry(async () => {
+        try {
+          await import_spawn_rx.spawnPromise("yt-dlp", ["--version"], { cwd: tempDir });
+        } catch (err) {
+          throw new YouTubeMCPError("yt-dlp is not installed. Please install yt-dlp first: https://github.com/yt-dlp/yt-dlp", ErrorCodes.YT_DLP_NOT_FOUND, false, err);
+        }
+      });
+      const startSeconds = parseTimeToSeconds(time_start);
+      const endSeconds = parseTimeToSeconds(time_end);
+      if (startSeconds >= endSeconds) {
+        throw new YouTubeMCPError("Start time must be before end time", ErrorCodes.UNKNOWN_ERROR, false);
+      }
+      let formatString = "";
+      switch (quality) {
+        case "720p":
+          formatString = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best";
+          break;
+        case "480p":
+          formatString = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best";
+          break;
+        case "360p":
+          formatString = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best";
+          break;
+        default:
+          formatString = format === "webm" ? "bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best" : "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
+      }
+      const outputTemplate = output_filename ? `${output_filename}.%(ext)s` : "%(title)s.%(ext)s";
+      const ytDlpArgs = [
+        "-f",
+        formatString,
+        "--no-playlist",
+        "--no-warnings",
+        "-o",
+        path3.join(downloadDir, outputTemplate)
+      ];
+      if (format === "mp4" || quality !== "best") {
+        ytDlpArgs.push("--merge-output-format", "mp4");
+      }
+      ytDlpArgs.push("--download-sections", `*${startSeconds}-${endSeconds}`);
+      ytDlpArgs.push(url);
+      const result = await withRetry(async () => {
+        return await import_spawn_rx.spawnPromise("yt-dlp", ytDlpArgs, { cwd: tempDir });
+      });
+      const files = fs3.readdirSync(downloadDir);
+      const videoFiles = files.filter((file) => (file.endsWith(".mp4") || file.endsWith(".webm")) && (output_filename ? file.startsWith(output_filename) : true));
+      if (videoFiles.length === 0) {
+        throw new YouTubeMCPError(`No video segment was downloaded to ${downloadDir}. The segment may not be available or format selection failed.`, ErrorCodes.FORMAT_NOT_AVAILABLE, true);
+      }
+      const downloadedFile = videoFiles[0];
+      const filePath = path3.join(downloadDir, downloadedFile);
+      const stats = fs3.statSync(filePath);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Video segment downloaded successfully!
+` + `File: ${downloadedFile}
+` + `Location: ${filePath}
+` + `Size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB
+` + `Time Range: ${time_start} - ${time_end}
+` + `Duration: ${formatSecondsToTime(endSeconds - startSeconds)}
+` + `Quality: ${quality}
+` + `Format: ${format}
+` + `Save Directory: ${downloadDir}
+` + `Output: ${result}`
+          }
+        ]
+      };
+    } finally {
+      rimraf.sync(tempDir);
+    }
+  } catch (error) {
+    if (error instanceof YouTubeMCPError) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error.message}`
+          }
+        ],
+        isError: true
+      };
+    }
+    const mcpError = handleYtDlpError(error, url);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error: ${mcpError.message}`
+        }
+      ],
+      isError: true
+    };
+  }
+}
+async function handleDownloadVideo(args) {
+  const { url, quality = "best", format = "mp4", output_filename, save_path } = args;
+  try {
+    const downloadDir = save_path && save_path.trim() !== "" ? save_path : process.cwd();
+    if (!fs3.existsSync(downloadDir)) {
+      try {
+        fs3.mkdirSync(downloadDir, { recursive: true });
+      } catch (error) {
+        throw new YouTubeMCPError(`Cannot create save directory: ${downloadDir}. ${error instanceof Error ? error.message : "Unknown error"}`, ErrorCodes.UNKNOWN_ERROR, false);
+      }
+    }
+    const tempDir = fs3.mkdtempSync(`${os2.tmpdir()}${path3.sep}youtube-`);
+    try {
+      await withRetry(async () => {
+        try {
+          await import_spawn_rx.spawnPromise("yt-dlp", ["--version"], { cwd: tempDir });
+        } catch (err) {
+          throw new YouTubeMCPError("yt-dlp is not installed. Please install yt-dlp first: https://github.com/yt-dlp/yt-dlp", ErrorCodes.YT_DLP_NOT_FOUND, false, err);
+        }
+      });
+      let formatString = "";
+      switch (quality) {
+        case "720p":
+          formatString = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best";
+          break;
+        case "480p":
+          formatString = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480][ext=mp4]/best";
+          break;
+        case "360p":
+          formatString = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360][ext=mp4]/best";
+          break;
+        default:
+          formatString = format === "webm" ? "bestvideo[ext=webm]+bestaudio[ext=webm]/best[ext=webm]/best" : "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
+      }
+      const outputTemplate = output_filename ? `${output_filename}.%(ext)s` : "%(title)s.%(ext)s";
+      const ytDlpArgs = [
+        "-f",
+        formatString,
+        "--no-playlist",
+        "--no-warnings",
+        "-o",
+        path3.join(downloadDir, outputTemplate)
+      ];
+      if (format === "mp4" || quality !== "best") {
+        ytDlpArgs.push("--merge-output-format", "mp4");
+      }
+      ytDlpArgs.push(url);
+      const result = await withRetry(async () => {
+        return await import_spawn_rx.spawnPromise("yt-dlp", ytDlpArgs, { cwd: tempDir });
+      });
+      const files = fs3.readdirSync(downloadDir);
+      const videoFiles = files.filter((file) => (file.endsWith(".mp4") || file.endsWith(".webm")) && (output_filename ? file.startsWith(output_filename) : true));
+      if (videoFiles.length === 0) {
+        throw new YouTubeMCPError(`No video file was downloaded to ${downloadDir}. The video may not be available or format selection failed.`, ErrorCodes.FORMAT_NOT_AVAILABLE, true);
+      }
+      const downloadedFile = videoFiles[0];
+      const filePath = path3.join(downloadDir, downloadedFile);
+      const stats = fs3.statSync(filePath);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Video downloaded successfully!
+` + `File: ${downloadedFile}
+` + `Location: ${filePath}
+` + `Size: ${(stats.size / (1024 * 1024)).toFixed(2)} MB
+` + `Quality: ${quality}
+` + `Format: ${format}
+` + `Save Directory: ${downloadDir}
+` + `Output: ${result}`
+          }
+        ]
+      };
+    } finally {
+      rimraf.sync(tempDir);
+    }
+  } catch (error) {
+    if (error instanceof YouTubeMCPError) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error.message}`
+          }
+        ],
+        isError: true
+      };
+    }
+    const mcpError = handleYtDlpError(error, url);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error: ${mcpError.message}`
+        }
+      ],
+      isError: true
+    };
+  }
+}
+async function handleGetVideoInfo(args) {
+  const { url } = args;
+  try {
+    const cacheKey = `video_info:${url}`;
+    const cached = await cache.get(cacheKey);
+    if (cached) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Video Information (cached):
+${JSON.stringify(cached, null, 2)}`
+          }
+        ]
+      };
+    }
+    const tempDir = fs3.mkdtempSync(`${os2.tmpdir()}${path3.sep}youtube-`);
+    try {
+      await withRetry(async () => {
+        try {
+          await import_spawn_rx.spawnPromise("yt-dlp", ["--version"], { cwd: tempDir });
+        } catch (err) {
+          throw new YouTubeMCPError("yt-dlp is not installed or not accessible. Please install yt-dlp first: https://github.com/yt-dlp/yt-dlp", ErrorCodes.YT_DLP_NOT_FOUND, false, err);
+        }
+      });
+      const result = await withRetry(async () => {
+        return await import_spawn_rx.spawnPromise("yt-dlp", [
+          "--dump-json",
+          "--no-download",
+          "--skip-download",
+          "--no-warnings",
+          url
+        ], { cwd: tempDir });
+      });
+      let jsonText = result.trim();
+      const firstBrace = jsonText.indexOf("{");
+      const lastBrace = jsonText.lastIndexOf("}");
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+        jsonText = jsonText.substring(firstBrace, lastBrace + 1);
+      }
+      const videoInfo = JSON.parse(jsonText);
+      const info = {
+        title: videoInfo.title || "Unknown Title",
+        duration: videoInfo.duration ? formatSecondsToTime(videoInfo.duration) : "Unknown",
+        uploader: videoInfo.uploader || "Unknown",
+        upload_date: videoInfo.upload_date || "Unknown",
+        view_count: videoInfo.view_count || 0,
+        description: videoInfo.description || "",
+        formats: videoInfo.formats?.length || 0,
+        subtitles_available: Object.keys(videoInfo.subtitles || {}).length,
+        auto_subtitles_available: Object.keys(videoInfo.automatic_captions || {}).length,
+        thumbnail: videoInfo.thumbnail || "",
+        channel_url: videoInfo.channel_url || ""
+      };
+      await cache.set(cacheKey, info);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Video Information:
 ` + `Title: ${info.title}
 ` + `Duration: ${info.duration}
 ` + `Uploader: ${info.uploader}
+` + `Channel: ${info.channel_url}
 ` + `Upload Date: ${info.upload_date}
 ` + `Views: ${info.view_count.toLocaleString()}
 ` + `Available Formats: ${info.formats}
 ` + `Manual Subtitles: ${info.subtitles_available} languages
 ` + `Auto Subtitles: ${info.auto_subtitles_available} languages
+` + `Thumbnail: ${info.thumbnail}
 
 ` + `Description:
 ${info.description.substring(0, 500)}${info.description.length > 500 ? "..." : ""}`
+          }
+        ]
+      };
+    } finally {
+      rimraf.sync(tempDir);
+    }
+  } catch (error) {
+    if (error instanceof YouTubeMCPError) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error.message}`
+          }
+        ],
+        isError: true
+      };
+    }
+    const mcpError = handleYtDlpError(error, url);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error: ${mcpError.message}`
         }
-      ]
+      ],
+      isError: true
     };
-  } finally {
-    rimraf.sync(tempDir);
   }
 }
 async function handleListAvailableSubtitles(args) {
   const { url } = args;
-  const tempDir = fs2.mkdtempSync(`${os.tmpdir()}${path2.sep}youtube-`);
+  const tempDir = fs3.mkdtempSync(`${os2.tmpdir()}${path3.sep}youtube-`);
   try {
-    try {
-      await import_spawn_rx.spawnPromise("yt-dlp", ["--version", "--no-warnings"], { cwd: tempDir });
-    } catch (err) {
-      throw new Error("yt-dlp is not installed. Please install yt-dlp first.");
-    }
-    const result = await import_spawn_rx.spawnPromise("yt-dlp", [
-      "--list-subs",
-      "--no-download",
-      "--no-warnings",
-      url
-    ], { cwd: tempDir });
+    await withRetry(async () => {
+      try {
+        await import_spawn_rx.spawnPromise("yt-dlp", ["--version", "--no-warnings"], { cwd: tempDir });
+      } catch (err) {
+        throw new YouTubeMCPError("yt-dlp is not installed. Please install yt-dlp first: https://github.com/yt-dlp/yt-dlp", ErrorCodes.YT_DLP_NOT_FOUND, false, err);
+      }
+    });
+    const result = await withRetry(async () => {
+      return await import_spawn_rx.spawnPromise("yt-dlp", [
+        "--list-subs",
+        "--no-download",
+        "--no-warnings",
+        url
+      ], { cwd: tempDir });
+    });
     return {
       content: [
         {
@@ -21898,6 +22652,28 @@ async function handleListAvailableSubtitles(args) {
 ${result}`
         }
       ]
+    };
+  } catch (error) {
+    if (error instanceof YouTubeMCPError) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error.message}`
+          }
+        ],
+        isError: true
+      };
+    }
+    const mcpError = handleYtDlpError(error, url);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error: ${mcpError.message}`
+        }
+      ],
+      isError: true
     };
   } finally {
     rimraf.sync(tempDir);
@@ -21913,7 +22689,7 @@ async function handleDownloadSubtitles(args) {
     time_end,
     include_metadata = true
   } = args;
-  const tempDir = fs2.mkdtempSync(`${os.tmpdir()}${path2.sep}youtube-`);
+  const tempDir = fs3.mkdtempSync(`${os2.tmpdir()}${path3.sep}youtube-`);
   try {
     const ytDlpArgs = ["--skip-download"];
     if (subtitle_types.includes("manual")) {
@@ -21940,17 +22716,21 @@ async function handleDownloadSubtitles(args) {
       const startSeconds = time_start ? parseTimeToSeconds(time_start) : 0;
       const endSeconds = time_end ? parseTimeToSeconds(time_end) : undefined;
       if (endSeconds && startSeconds >= endSeconds) {
-        throw new Error("Start time must be before end time");
+        throw new YouTubeMCPError("Start time must be before end time", ErrorCodes.UNKNOWN_ERROR, false);
       }
       ytDlpArgs.push("--download-sections", `*${startSeconds}-${endSeconds || "inf"}`);
     }
     ytDlpArgs.push(url);
-    await import_spawn_rx.spawnPromise("yt-dlp", ytDlpArgs, { cwd: tempDir });
+    await withRetry(async () => {
+      return await import_spawn_rx.spawnPromise("yt-dlp", ytDlpArgs, { cwd: tempDir });
+    });
     let content = "";
     let metadata = "";
     if (include_metadata) {
       try {
-        const metadataResult = await import_spawn_rx.spawnPromise("yt-dlp", ["--dump-json", "--no-download", "--no-warnings", url], { cwd: tempDir });
+        const metadataResult = await withRetry(async () => {
+          return await import_spawn_rx.spawnPromise("yt-dlp", ["--dump-json", "--no-download", "--no-warnings", url], { cwd: tempDir });
+        });
         let metadataJsonText = metadataResult.trim();
         const firstBrace = metadataJsonText.indexOf("{");
         const lastBrace = metadataJsonText.lastIndexOf("}");
@@ -21969,28 +22749,27 @@ async function handleDownloadSubtitles(args) {
 `;
       }
     }
-    const files = fs2.readdirSync(tempDir);
+    const files = fs3.readdirSync(tempDir);
     const subtitleFiles = files.filter((file) => file.endsWith(".vtt") || file.endsWith(".srt"));
     if (subtitleFiles.length === 0) {
-      content = "No subtitles were downloaded. They may not be available for this video.";
-    } else {
-      for (const file of subtitleFiles) {
-        const fileContent = fs2.readFileSync(path2.join(tempDir, file), "utf8");
-        if (formats.length > 1 && formats[0] !== "vtt") {
-          const cleanedContent = stripVttNonContent(fileContent);
-          content += `${file} (converted to text)
+      throw new YouTubeMCPError("No subtitles were downloaded. They may not be available for this video or in the requested languages.", ErrorCodes.SUBTITLES_NOT_AVAILABLE, true);
+    }
+    for (const file of subtitleFiles) {
+      const fileContent = fs3.readFileSync(path3.join(tempDir, file), "utf8");
+      if (formats.length > 1 && formats[0] !== "vtt") {
+        const cleanedContent = stripVttNonContent(fileContent);
+        content += `${file} (converted to text)
 ====================
 ${cleanedContent}
 
 `;
-        } else {
-          const cleanedContent = stripVttNonContent(fileContent);
-          content += `${file}
+      } else {
+        const cleanedContent = stripVttNonContent(fileContent);
+        content += `${file}
 ====================
 ${cleanedContent}
 
 `;
-        }
       }
     }
     return {
@@ -22002,13 +22781,35 @@ ${content}`
         }
       ]
     };
+  } catch (error) {
+    if (error instanceof YouTubeMCPError) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${error.message}`
+          }
+        ],
+        isError: true
+      };
+    }
+    const mcpError = handleYtDlpError(error, url);
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Error: ${mcpError.message}`
+        }
+      ],
+      isError: true
+    };
   } finally {
     rimraf.sync(tempDir);
   }
 }
 async function handleDownloadVideoMetadata(args) {
   const { url } = args;
-  const tempDir = fs2.mkdtempSync(`${os.tmpdir()}${path2.sep}youtube-`);
+  const tempDir = fs3.mkdtempSync(`${os2.tmpdir()}${path3.sep}youtube-`);
   try {
     try {
       await import_spawn_rx.spawnPromise("yt-dlp", ["--version", "--no-warnings"], { cwd: tempDir });
@@ -22078,6 +22879,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name } = request.params;
   try {
     switch (name) {
+      case "download_thumbnail":
+        return await handleDownloadThumbnail(request.params.arguments);
+      case "download_audio":
+        return await handleDownloadAudio(request.params.arguments);
+      case "download_video_segment":
+        return await handleDownloadVideoSegment(request.params.arguments);
+      case "download_video":
+        return await handleDownloadVideo(request.params.arguments);
       case "get_video_info":
         return await handleGetVideoInfo(request.params.arguments);
       case "list_available_subtitles":
@@ -22087,10 +22896,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "download_video_metadata":
         return await handleDownloadVideoMetadata(request.params.arguments);
       default:
-        throw new Error(`Unknown tool: ${name}`);
+        throw new YouTubeMCPError(`Unknown tool: ${name}. Available tools: download_thumbnail, download_audio, download_video_segment, download_video, get_video_info, list_available_subtitles, download_subtitles, download_video_metadata`, ErrorCodes.UNKNOWN_ERROR, false);
     }
   } catch (err) {
     console.error(`Error in tool ${name}:`, err);
+    if (err instanceof YouTubeMCPError) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Error: ${err.message}`
+          }
+        ],
+        isError: true
+      };
+    }
     return {
       content: [
         {
@@ -22164,18 +22984,39 @@ function stripVttNonContent(vttContent, preserveTiming = false) {
   }
 }
 async function runServer() {
-  console.error("Starting YouTube MCP Server v0.7.0...");
+  console.error("\uD83D\uDE80 Starting Enhanced YouTube MCP Server v0.8.0...");
   try {
-    await import_spawn_rx.spawnPromise("yt-dlp", ["--version", "--no-warnings"]);
+    await withRetry(async () => {
+      await import_spawn_rx.spawnPromise("yt-dlp", ["--version", "--no-warnings"]);
+    });
     console.error("✓ yt-dlp is available");
   } catch (err) {
-    console.error("✗ yt-dlp is not installed. Please install yt-dlp and try again.");
-    console.error("Installation: pip install yt-dlp");
+    console.error("✗ yt-dlp is not installed or not accessible.");
+    console.error("Please install yt-dlp: https://github.com/yt-dlp/yt-dlp");
+    console.error("Installation methods:");
+    console.error("  pip: pip install -U yt-dlp");
+    console.error("  Homebrew: brew install yt-dlp");
+    console.error("  Windows: winget install yt-dlp");
     process.exit(1);
+  }
+  try {
+    await cache.cleanup();
+    console.error("✓ Cache cleaned up");
+  } catch (err) {
+    console.error("⚠ Cache cleanup failed:", err);
   }
   const transport = new StdioServerTransport;
   await server.connect(transport);
-  console.error("✓ YouTube MCP Server started successfully");
+  console.error("✅ Enhanced YouTube MCP Server started successfully!");
+  console.error("Available tools:");
+  console.error("  • download_thumbnail - Download video thumbnails (fast)");
+  console.error("  • download_audio - Download audio content (music/podcasts)");
+  console.error("  • download_video_segment - Download specific video portions");
+  console.error("  • download_video - Download full videos with quality selection");
+  console.error("  • get_video_info - Get comprehensive video metadata");
+  console.error("  • list_available_subtitles - List subtitle options");
+  console.error("  • download_subtitles - Download subtitles with time ranges");
+  console.error("  • download_video_metadata - Get detailed metadata");
 }
 runServer().catch((err) => {
   console.error("Failed to start server:", err);
